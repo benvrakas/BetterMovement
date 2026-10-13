@@ -1,7 +1,8 @@
-#include "USSlideSubsystem.h"
-#include "UphillSlide.h"
-#include "USConfig.h"
-#include "USSlideMomentum.h"
+#include "BMMovementSubsystem.h"
+#include "BetterMovement.h"
+#include "BMConfig.h"
+#include "BMMomentum.h"
+#include "BMWaterSkim.h"
 #include "Curves/CurveFloat.h"
 #include "EngineUtils.h"
 #include "Equipment/FGEquipment.h"
@@ -45,7 +46,7 @@ namespace
 	}
 }
 
-AUSSlideSubsystem::AUSSlideSubsystem()
+ABMMovementSubsystem::ABMMovementSubsystem()
 {
 	ReplicationPolicy = ESubsystemReplicationPolicy::SpawnOnServer_Replicate;
 	PrimaryActorTick.bCanEverTick = true;
@@ -53,36 +54,37 @@ AUSSlideSubsystem::AUSSlideSubsystem()
 	PrimaryActorTick.TickInterval = ApplyInterval;
 }
 
-AUSSlideSubsystem* AUSSlideSubsystem::Get(const UObject* WorldContext)
+ABMMovementSubsystem* ABMMovementSubsystem::Get(const UObject* WorldContext)
 {
 	UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
 	USubsystemActorManager* Manager = World ? World->GetSubsystem<USubsystemActorManager>() : nullptr;
-	return Manager ? Manager->GetSubsystemActor<AUSSlideSubsystem>() : nullptr;
+	return Manager ? Manager->GetSubsystemActor<ABMMovementSubsystem>() : nullptr;
 }
 
-void AUSSlideSubsystem::BeginPlay()
+void ABMMovementSubsystem::BeginPlay()
 {
 	Super::BeginPlay();
-	UE_LOG(LogUphillSlide, Log, TEXT("Slide subsystem started (%s)"), HasAuthority() ? TEXT("server") : TEXT("client"));
+	UE_LOG(LogBetterMovement, Log, TEXT("Slide subsystem started (%s)"), HasAuthority() ? TEXT("server") : TEXT("client"));
 	if (HasAuthority())
 	{
 		RefreshSettingsFromConfig();
 	}
 }
 
-void AUSSlideSubsystem::EndPlay(const EEndPlayReason::Type EndPlayReason)
+void ABMMovementSubsystem::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	RestoreAll();
 	Super::EndPlay(EndPlayReason);
 }
 
-void AUSSlideSubsystem::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+void ABMMovementSubsystem::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-	DOREPLIFETIME(AUSSlideSubsystem, TierSettings);
+	DOREPLIFETIME(ABMMovementSubsystem, TierSettings);
+	DOREPLIFETIME(ABMMovementSubsystem, SpeedLimits);
 }
 
-void AUSSlideSubsystem::Tick(float DeltaSeconds)
+void ABMMovementSubsystem::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
@@ -101,15 +103,16 @@ void AUSSlideSubsystem::Tick(float DeltaSeconds)
 				It.RemoveCurrent();
 			}
 		}
-		FUSSlideMomentum::Prune();
+		FBMMomentum::Prune();
+		FBMWaterSkim::Prune();
 	}
 
-	if (TierSettings.Num() != USTierCount)
+	if (TierSettings.Num() != BMTierCount)
 	{
 		if (!bLoggedWaitingForSettings)
 		{
 			bLoggedWaitingForSettings = true;
-			UE_LOG(LogUphillSlide, Log, TEXT("Waiting for the host's settings (have %d of %d tiers); slides stay vanilla until then"), TierSettings.Num(), USTierCount);
+			UE_LOG(LogBetterMovement, Log, TEXT("Waiting for the host's settings (have %d of %d tiers); slides stay vanilla until then"), TierSettings.Num(), BMTierCount);
 		}
 		return;
 	}
@@ -124,23 +127,30 @@ void AUSSlideSubsystem::Tick(float DeltaSeconds)
 	}
 }
 
-void AUSSlideSubsystem::RefreshSettingsFromConfig()
+void ABMMovementSubsystem::RefreshSettingsFromConfig()
 {
-	TArray<FUSTierSettings> NewSettings;
-	if (!UUSConfig::ReadTierSettings(this, NewSettings) || NewSettings == TierSettings)
+	FBMSpeedLimits NewLimits;
+	if (UBMConfig::ReadSpeedLimits(this, NewLimits) && !(NewLimits == SpeedLimits))
+	{
+		SpeedLimits = NewLimits;
+		UE_LOG(LogBetterMovement, Log, TEXT("Speed limits: slide %.0f m/s, air %.0f m/s, parachute %.0f m/s, water skim %.0f m/s, parachute acceleration %.2f"),
+			SpeedLimits.MaxSlideSpeed, SpeedLimits.MaxAirSpeed, SpeedLimits.MaxParachuteSpeed, SpeedLimits.WaterSkimSpeed, SpeedLimits.ParachuteAcceleration);
+	}
+
+	TArray<FBMTierSettings> NewSettings;
+	if (!UBMConfig::ReadTierSettings(this, NewSettings) || NewSettings == TierSettings)
 	{
 		return;
 	}
 	TierSettings = MoveTemp(NewSettings);
 	for (int32 Index = 0; Index < TierSettings.Num(); ++Index)
 	{
-		UE_LOG(LogUphillSlide, Log, TEXT("Settings: %s: uphill up to %.2f degrees, speed loss %.0f%%, keep entry speed %s"),
-			USTierName(static_cast<EUSTier>(Index)), TierSettings[Index].UphillAngleDegrees, TierSettings[Index].SpeedLossPercent,
-			TierSettings[Index].bKeepEntrySpeed ? TEXT("on") : TEXT("off"));
+		UE_LOG(LogBetterMovement, Log, TEXT("Settings: %s: uphill up to %.2f degrees, speed loss %.0f%%"),
+			BMTierName(static_cast<EBMTier>(Index)), TierSettings[Index].UphillAngleDegrees, TierSettings[Index].SpeedLossPercent);
 	}
 }
 
-EUSTier AUSSlideSubsystem::GetTier(const AFGCharacterPlayer* Character)
+EBMTier ABMMovementSubsystem::GetTier(const AFGCharacterPlayer* Character)
 {
 	const AFGJumpingStilts* Stilts = nullptr;
 	for (AFGEquipment* Equipment : Character->GetActiveEquipments())
@@ -153,18 +163,18 @@ EUSTier AUSSlideSubsystem::GetTier(const AFGCharacterPlayer* Character)
 	}
 	if (!Stilts)
 	{
-		return EUSTier::None;
+		return EBMTier::None;
 	}
 
 	const UClass* Class = Stilts->GetClass();
-	EUSTier Tier = EUSTier::Mk1;
+	EBMTier Tier = EBMTier::Mk1;
 	const FString Name = Class->GetName();
 	if (Class->GetPathName().StartsWith(MkPlusPathPrefix) && Name.Len() > 2 && Name.StartsWith(TEXT("Mk")) && FChar::IsDigit(Name[2]))
 	{
 		const int32 Mark = Name[2] - TEXT('0');
-		if (Mark >= static_cast<int32>(EUSTier::Mk2) && Mark <= static_cast<int32>(EUSTier::Mk5))
+		if (Mark >= static_cast<int32>(EBMTier::Mk2) && Mark <= static_cast<int32>(EBMTier::Mk5))
 		{
-			Tier = static_cast<EUSTier>(Mark);
+			Tier = static_cast<EBMTier>(Mark);
 		}
 	}
 
@@ -172,12 +182,12 @@ EUSTier AUSSlideSubsystem::GetTier(const AFGCharacterPlayer* Character)
 	if (!LoggedClasses.Contains(ClassPath))
 	{
 		LoggedClasses.Add(ClassPath);
-		UE_LOG(LogUphillSlide, Log, TEXT("Blade Runners class %s uses the %s settings"), *ClassPath, USTierName(Tier));
+		UE_LOG(LogBetterMovement, Log, TEXT("Blade Runners class %s uses the %s settings"), *ClassPath, BMTierName(Tier));
 	}
 	return Tier;
 }
 
-void AUSSlideSubsystem::ApplyTo(AFGCharacterPlayer* Character)
+void ABMMovementSubsystem::ApplyTo(AFGCharacterPlayer* Character)
 {
 	UFGCharacterMovementComponent* Movement = Character->GetFGMovementComponent();
 	if (!Movement)
@@ -191,20 +201,21 @@ void AUSSlideSubsystem::ApplyTo(AFGCharacterPlayer* Character)
 		State = &Tracked.Add(Movement);
 		State->VanillaMaxSlideAngle = Movement->GetmMaxSlideAngle();
 		State->VanillaSlopeCurve = Movement->GetmSlopeCurve();
-		UE_LOG(LogUphillSlide, Log, TEXT("Tracking %s (%s): vanilla max slide angle %.4f rad (%.2f degrees uphill), slope curve %s"),
+		UE_LOG(LogBetterMovement, Log, TEXT("Tracking %s (%s): vanilla max slide angle %.4f rad (%.2f degrees uphill), slope curve %s"),
 			*DescribePlayer(Character), Character->HasAuthority() ? TEXT("server") : TEXT("own client"), State->VanillaMaxSlideAngle,
 			FMath::RadiansToDegrees(State->VanillaMaxSlideAngle - FlatSlopeAngle), *GetPathNameSafe(State->VanillaSlopeCurve.Get()));
 		if (const UCurveFloat* VanillaCurve = State->VanillaSlopeCurve.Get(); VanillaCurve && !bLoggedVanillaCurve)
 		{
 			bLoggedVanillaCurve = true;
-			UE_LOG(LogUphillSlide, Log, TEXT("Vanilla slope curve keys (slope angle rad, slide time rate): %s"), *DescribeKeys(VanillaCurve->FloatCurve));
+			UE_LOG(LogBetterMovement, Log, TEXT("Vanilla slope curve keys (slope angle rad, slide time rate): %s"), *DescribeKeys(VanillaCurve->FloatCurve));
 		}
 	}
 
-	const EUSTier Tier = GetTier(Character);
-	const FUSTierSettings& Settings = TierSettings[static_cast<int32>(Tier)];
+	const EBMTier Tier = GetTier(Character);
+	const FBMTierSettings& Settings = TierSettings[static_cast<int32>(Tier)];
 	const float MaxSlideAngle = FlatSlopeAngle + FMath::DegreesToRadians(Settings.UphillAngleDegrees);
-	const float SpeedLossFactor = Settings.SpeedLossPercent / 100.f;
+	// Negative speed loss freezes the slide timer like 0% does; FBMMomentum adds the speed-up.
+	const float SpeedLossFactor = FMath::Max(Settings.SpeedLossPercent, 0.f) / 100.f;
 
 	UCurveFloat* VanillaCurve = State->VanillaSlopeCurve.Get();
 	UCurveFloat* SlopeCurve = VanillaCurve;
@@ -217,7 +228,7 @@ void AUSSlideSubsystem::ApplyTo(AFGCharacterPlayer* Character)
 		else if (!bLoggedMissingCurve)
 		{
 			bLoggedMissingCurve = true;
-			UE_LOG(LogUphillSlide, Warning, TEXT("%s has no slope curve; speed loss can't be changed"), *DescribePlayer(Character));
+			UE_LOG(LogBetterMovement, Warning, TEXT("%s has no slope curve; speed loss can't be changed"), *DescribePlayer(Character));
 		}
 	}
 
@@ -229,19 +240,20 @@ void AUSSlideSubsystem::ApplyTo(AFGCharacterPlayer* Character)
 	{
 		Movement->SetmSlopeCurve(SlopeCurve);
 	}
-	FUSSlideMomentum::SetEnabled(Movement, Settings.bKeepEntrySpeed);
+	FBMMomentum::SetSettings(Movement, FMath::Max(-Settings.SpeedLossPercent, 0.f) / 100.f, SpeedLimits);
+	FBMWaterSkim::SetSettings(Movement, SpeedLimits.WaterSkimSpeed, this);
 
 	if (State->AppliedTier != Tier || !(State->AppliedSettings == Settings))
 	{
 		State->AppliedTier = Tier;
 		State->AppliedSettings = Settings;
-		UE_LOG(LogUphillSlide, Log, TEXT("%s (%s) now uses %s: uphill up to %.2f degrees (max slide angle %.4f rad), speed loss %.0f%%, keep entry speed %s"),
-			*DescribePlayer(Character), Character->HasAuthority() ? TEXT("server") : TEXT("own client"), USTierName(Tier),
-			Settings.UphillAngleDegrees, MaxSlideAngle, Settings.SpeedLossPercent, Settings.bKeepEntrySpeed ? TEXT("on") : TEXT("off"));
+		UE_LOG(LogBetterMovement, Log, TEXT("%s (%s) now uses %s: uphill up to %.2f degrees (max slide angle %.4f rad), speed loss %.0f%%"),
+			*DescribePlayer(Character), Character->HasAuthority() ? TEXT("server") : TEXT("own client"), BMTierName(Tier),
+			Settings.UphillAngleDegrees, MaxSlideAngle, Settings.SpeedLossPercent);
 	}
 }
 
-UCurveFloat* AUSSlideSubsystem::GetScaledSlopeCurve(UCurveFloat* Vanilla, float Factor)
+UCurveFloat* ABMMovementSubsystem::GetScaledSlopeCurve(UCurveFloat* Vanilla, float Factor)
 {
 	const TPair<const UCurveFloat*, int32> Key(Vanilla, FMath::RoundToInt(Factor * 1000.f));
 	if (UCurveFloat* const* Found = ScaledCurveLookup.Find(Key))
@@ -265,12 +277,12 @@ UCurveFloat* AUSSlideSubsystem::GetScaledSlopeCurve(UCurveFloat* Vanilla, float 
 	ScaledCurves.Add(Scaled);
 	ScaledCurveLookup.Add(Key, Scaled);
 	auto RateAt = [&Target](float DegreesUphill) { return Target.Eval(FlatSlopeAngle + FMath::DegreesToRadians(DegreesUphill)); };
-	UE_LOG(LogUphillSlide, Log, TEXT("Built slope curve for speed loss %.0f%% from %s: slide time rate %.3f at 30 degrees down, %.3f at 10 down, %.3f flat, %.3f at 10 up, %.3f at 30 up"),
+	UE_LOG(LogBetterMovement, Log, TEXT("Built slope curve for speed loss %.0f%% from %s: slide time rate %.3f at 30 degrees down, %.3f at 10 down, %.3f flat, %.3f at 10 up, %.3f at 30 up"),
 		Factor * 100.f, *GetPathNameSafe(Vanilla), RateAt(-30.f), RateAt(-10.f), RateAt(0.f), RateAt(10.f), RateAt(30.f));
 	return Scaled;
 }
 
-void AUSSlideSubsystem::RestoreAll()
+void ABMMovementSubsystem::RestoreAll()
 {
 	int32 Restored = 0;
 	for (const TPair<TWeakObjectPtr<UFGCharacterMovementComponent>, FTrackedMovement>& Pair : Tracked)
@@ -283,6 +295,7 @@ void AUSSlideSubsystem::RestoreAll()
 		}
 	}
 	Tracked.Reset();
-	FUSSlideMomentum::Reset();
-	UE_LOG(LogUphillSlide, Log, TEXT("Restored vanilla slide values on %d players"), Restored);
+	FBMMomentum::Reset();
+	FBMWaterSkim::Reset();
+	UE_LOG(LogBetterMovement, Log, TEXT("Restored vanilla slide values on %d players"), Restored);
 }

@@ -2,8 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "Subsystem/ModSubsystem.h"
-#include "USTypes.h"
-#include "USSlideSubsystem.generated.h"
+#include "BMTypes.h"
+#include "BMMovementSubsystem.generated.h"
 
 class AFGCharacterPlayer;
 class UCurveFloat;
@@ -12,18 +12,18 @@ class UFGCharacterMovementComponent;
 // Applies each player's tier settings to their movement component. The server reads the host's configuration and
 // replicates it; the server and each player's own game then apply the same values to that player.
 UCLASS()
-class UPHILLSLIDE_API AUSSlideSubsystem : public AModSubsystem
+class BETTERMOVEMENT_API ABMMovementSubsystem : public AModSubsystem
 {
 	GENERATED_BODY()
 
 public:
-	AUSSlideSubsystem();
+	ABMMovementSubsystem();
 
 	// Returns the subsystem for the world WorldContext belongs to, or null if it hasn't spawned yet.
-	static AUSSlideSubsystem* Get(const UObject* WorldContext);
+	static ABMMovementSubsystem* Get(const UObject* WorldContext);
 
 	// Returns which tier's settings apply to Character, from the Blade Runners they're wearing.
-	EUSTier GetTier(const AFGCharacterPlayer* Character);
+	EBMTier GetTier(const AFGCharacterPlayer* Character);
 
 	//~ Begin AActor interface
 	virtual void BeginPlay() override;
@@ -38,11 +38,11 @@ private:
 	{
 		float VanillaMaxSlideAngle = 0.f;
 		TWeakObjectPtr<UCurveFloat> VanillaSlopeCurve;
-		EUSTier AppliedTier = EUSTier::Count;
-		FUSTierSettings AppliedSettings;
+		EBMTier AppliedTier = EBMTier::Count;
+		FBMTierSettings AppliedSettings;
 	};
 
-	// Server only. Copies the host's configuration into TierSettings if it changed.
+	// Server only. Copies the host's configuration into TierSettings and SpeedLimits if it changed.
 	void RefreshSettingsFromConfig();
 
 	// Sets Character's max slide angle and slope curve from their tier's settings.
@@ -54,9 +54,13 @@ private:
 	// Puts every tracked movement component back to its vanilla values.
 	void RestoreAll();
 
-	// The host's settings, indexed by EUSTier. Empty until the server has read its configuration.
+	// The host's settings, indexed by EBMTier. Empty until the server has read its configuration.
 	UPROPERTY(Replicated)
-	TArray<FUSTierSettings> TierSettings;
+	TArray<FBMTierSettings> TierSettings;
+
+	// The host's speed limits.
+	UPROPERTY(Replicated)
+	FBMSpeedLimits SpeedLimits;
 
 	// Slope curves built by GetScaledSlopeCurve, kept alive while in use.
 	UPROPERTY(Transient)

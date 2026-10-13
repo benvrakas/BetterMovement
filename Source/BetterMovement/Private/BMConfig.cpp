@@ -1,7 +1,6 @@
-#include "USConfig.h"
-#include "UphillSlide.h"
+#include "BMConfig.h"
+#include "BetterMovement.h"
 #include "Configuration/ConfigManager.h"
-#include "Configuration/Properties/ConfigPropertyBool.h"
 #include "Configuration/Properties/ConfigPropertyFloat.h"
 #include "Configuration/Properties/ConfigPropertySection.h"
 #include "Configuration/Properties/WidgetExtension/CP_Float.h"
@@ -9,18 +8,23 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
-#define LOCTEXT_NAMESPACE "UphillSlide"
+#define LOCTEXT_NAMESPACE "BetterMovement"
 
-const FString UUSConfig::UphillAngleKey = TEXT("UphillAngle");
-const FString UUSConfig::SpeedLossKey = TEXT("SpeedLoss");
-const FString UUSConfig::KeepEntrySpeedKey = TEXT("KeepEntrySpeed");
+const FString UBMConfig::UphillAngleKey = TEXT("UphillAngle");
+const FString UBMConfig::SpeedLossKey = TEXT("SpeedLoss");
+const FString UBMConfig::SpeedLimitsKey = TEXT("SpeedLimits");
+const FString UBMConfig::MaxSlideSpeedKey = TEXT("MaxSlideSpeed");
+const FString UBMConfig::MaxAirSpeedKey = TEXT("MaxAirSpeed");
+const FString UBMConfig::MaxParachuteSpeedKey = TEXT("MaxParachuteSpeed");
+const FString UBMConfig::WaterSkimSpeedKey = TEXT("WaterSkimSpeed");
+const FString UBMConfig::ParachuteAccelerationKey = TEXT("ParachuteAcceleration");
 
 namespace
 {
 	FConfigId MakeConfigId()
 	{
 		FConfigId Id;
-		Id.ModReference = TEXT("UphillSlide");
+		Id.ModReference = TEXT("BetterMovement");
 		return Id;
 	}
 
@@ -33,7 +37,7 @@ namespace
 		FText Tooltip;
 	};
 
-	// Default uphill angle and Mods menu text of each tier, indexed by EUSTier.
+	// Default uphill angle and Mods menu text of each tier, indexed by EBMTier.
 	TArray<FTierDefaults> GetTierDefaults()
 	{
 		return {
@@ -46,13 +50,17 @@ namespace
 		};
 	}
 
-	// Returns the header name of the tier whose section is stored under SectionKey, or empty text.
-	FText GetTierName(const FString& SectionKey)
+	// Returns the header name of the section stored under SectionKey, or empty text.
+	FText GetSectionName(const FString& SectionKey)
 	{
-		const TArray<FTierDefaults> Defaults = GetTierDefaults();
-		for (int32 Index = 0; Index < USTierCount; ++Index)
+		if (SectionKey == UBMConfig::SpeedLimitsKey)
 		{
-			if (UUSConfig::GetTierSectionKey(static_cast<EUSTier>(Index)) == SectionKey)
+			return LOCTEXT("SpeedLimits", "Speed limits");
+		}
+		const TArray<FTierDefaults> Defaults = GetTierDefaults();
+		for (int32 Index = 0; Index < BMTierCount; ++Index)
+		{
+			if (UBMConfig::GetTierSectionKey(static_cast<EBMTier>(Index)) == SectionKey)
 			{
 				return Defaults[Index].Name;
 			}
@@ -69,13 +77,6 @@ namespace
 		return Manager ? Manager->GetConfigurationRootSection(MakeConfigId()) : nullptr;
 	}
 
-	// Returns the boolean setting Key inside Section, or null.
-	const UConfigPropertyBool* FindBool(const UConfigPropertySection* Section, const FString& Key)
-	{
-		const TObjectPtr<UConfigProperty>* Found = Section ? Section->SectionProperties.Find(Key) : nullptr;
-		return Found ? Cast<UConfigPropertyBool>(Found->Get()) : nullptr;
-	}
-
 	// Returns the float setting Key inside Section, or null.
 	const UConfigPropertyFloat* FindFloat(const UConfigPropertySection* Section, const FString& Key)
 	{
@@ -84,32 +85,57 @@ namespace
 	}
 }
 
-FString UUSConfig::GetTierSectionKey(EUSTier Tier)
+FString UBMConfig::GetTierSectionKey(EBMTier Tier)
 {
 	switch (Tier)
 	{
-	case EUSTier::None: return TEXT("NoBladeRunners");
-	case EUSTier::Mk1: return TEXT("Mk1");
-	case EUSTier::Mk2: return TEXT("Mk2");
-	case EUSTier::Mk3: return TEXT("Mk3");
-	case EUSTier::Mk4: return TEXT("Mk4");
-	case EUSTier::Mk5: return TEXT("Mk5");
+	case EBMTier::None: return TEXT("NoBladeRunners");
+	case EBMTier::Mk1: return TEXT("Mk1");
+	case EBMTier::Mk2: return TEXT("Mk2");
+	case EBMTier::Mk3: return TEXT("Mk3");
+	case EBMTier::Mk4: return TEXT("Mk4");
+	case EBMTier::Mk5: return TEXT("Mk5");
 	default: return TEXT("Unknown");
 	}
 }
 
-UUSConfig::UUSConfig()
+UBMConfig::UBMConfig()
 {
 	ConfigId = MakeConfigId();
-	DisplayName = LOCTEXT("ConfigName", "Uphill Slide");
-	Description = LOCTEXT("ConfigDescription", "How steep a slope you can slide up, for each Blade Runners tier.");
+	DisplayName = LOCTEXT("ConfigName", "Better Movement");
+	Description = LOCTEXT("ConfigDescription", "Speed limits for sliding, the air and the parachute, water skimming, and how you slide with each Blade Runners tier.");
 
 	RootSection = CreateDefaultSubobject<UConfigPropertySection>(TEXT("RootSection"));
 
-	const TArray<FTierDefaults> Defaults = GetTierDefaults();
-	for (int32 Index = 0; Index < USTierCount; ++Index)
+	UConfigPropertySection* Limits = CreateDefaultSubobject<UConfigPropertySection>(TEXT("SpeedLimitsSection"));
+	Limits->DisplayName = LOCTEXT("SpeedLimitsHint", "everyone, in m/s");
+	Limits->Tooltip = LOCTEXT("SpeedLimitsTip", "Top speeds for every player, whatever they're wearing. In multiplayer, the host's settings apply to everyone.");
+	auto AddLimit = [this, Limits](const FString& Key, const TCHAR* ObjectName, const FText& Name, const FText& Tooltip, float Default)
 	{
-		const FString SectionKey = GetTierSectionKey(static_cast<EUSTier>(Index));
+		UConfigPropertyFloat* Limit = CreateDefaultSubobject<UConfigPropertyFloat>(ObjectName);
+		Limit->DisplayName = Name;
+		Limit->Tooltip = Tooltip;
+		Limit->DefaultValue = Default;
+		Limit->Value = Default;
+		Limits->SectionProperties.Add(Key, Limit);
+	};
+	const FBMSpeedLimits DefaultLimits;
+	AddLimit(MaxSlideSpeedKey, TEXT("MaxSlideSpeed"), LOCTEXT("MaxSlideSpeed", "Max slide speed"),
+		LOCTEXT("MaxSlideSpeedTip", "Fastest a slide can go, in m/s (1 to 300), including speed kept from bhopping and speed gained from a negative Speed lost while sliding. A normal slide starts at about 10."), DefaultLimits.MaxSlideSpeed);
+	AddLimit(MaxAirSpeedKey, TEXT("MaxAirSpeed"), LOCTEXT("MaxAirSpeed", "Max air speed"),
+		LOCTEXT("MaxAirSpeedTip", "Fastest speed you keep in the air after jumping out of a slide, in m/s (1 to 300). Also the limit on jumps out of a slide, which vanilla sets to 33."), DefaultLimits.MaxAirSpeed);
+	AddLimit(MaxParachuteSpeedKey, TEXT("MaxParachuteSpeed"), LOCTEXT("MaxParachuteSpeed", "Max parachute speed"),
+		LOCTEXT("MaxParachuteSpeedTip", "Fastest speed you keep when you open the parachute while moving fast, in m/s (1 to 300). The parachute's own speed (10, or 15 holding Shift) is unchanged; set this below 15 to slow it down."), DefaultLimits.MaxParachuteSpeed);
+	AddLimit(WaterSkimSpeedKey, TEXT("WaterSkimSpeed"), LOCTEXT("WaterSkimSpeed", "Water skim speed"),
+		LOCTEXT("WaterSkimSpeedTip", "Moving at least this fast, in m/s (0 to 300), you slide or run across water instead of going in; slow down and you drop in. 0 turns it off. Vanilla has no water skimming."), DefaultLimits.WaterSkimSpeed);
+	AddLimit(ParachuteAccelerationKey, TEXT("ParachuteAcceleration"), LOCTEXT("ParachuteAcceleration", "Parachute acceleration"),
+		LOCTEXT("ParachuteAccelerationTip", "How strongly the parachute turns falling into forward speed while you hold a direction and Shift, like a glider (0 to 2). Without Shift you keep your speed. It's the share of gravity along your glide path you gain: 1 (the default) is all of it, 0.5 half, 0 turns it off (vanilla). You speed up fastest from slow, and less as you get faster, up to the max parachute speed. Let go of the movement keys to slow down."), DefaultLimits.ParachuteAcceleration);
+	RootSection->SectionProperties.Add(SpeedLimitsKey, Limits);
+
+	const TArray<FTierDefaults> Defaults = GetTierDefaults();
+	for (int32 Index = 0; Index < BMTierCount; ++Index)
+	{
+		const FString SectionKey = GetTierSectionKey(static_cast<EBMTier>(Index));
 		const FTierDefaults& Tier = Defaults[Index];
 
 		UConfigPropertySection* Section = CreateDefaultSubobject<UConfigPropertySection>(*(SectionKey + TEXT("Section")));
@@ -125,17 +151,11 @@ UUSConfig::UUSConfig()
 
 		UConfigPropertyFloat* SpeedLoss = CreateDefaultSubobject<UConfigPropertyFloat>(*(SectionKey + TEXT("SpeedLoss")));
 		SpeedLoss->DisplayName = LOCTEXT("SpeedLoss", "Speed lost while sliding (%)");
-		SpeedLoss->Tooltip = LOCTEXT("SpeedLossTip", "How quickly a slide loses speed, on flat ground and uphill, in percent of normal: 100 is vanilla, 50 keeps your speed twice as long, 0 never slows down. Steep downhill slopes still speed you up as usual. In multiplayer, the host's settings apply to everyone.");
+		SpeedLoss->Tooltip = LOCTEXT("SpeedLossTip", "How quickly a slide loses speed, on flat ground and uphill, in percent of normal. A slide starts from the speed you go into it with, for example from bhopping. 100 is vanilla, 50 keeps your speed twice as long, 0 never slows down. Below 0 the slide speeds up instead: -50 adds half your starting slide speed every second, up to the max slide speed. Steep downhill slopes still speed you up as usual. In multiplayer, the host's settings apply to everyone.");
 		SpeedLoss->DefaultValue = 100.f;
 		SpeedLoss->Value = 100.f;
 		Section->SectionProperties.Add(SpeedLossKey, SpeedLoss);
 
-		UConfigPropertyBool* KeepEntrySpeed = CreateDefaultSubobject<UConfigPropertyBool>(*(SectionKey + TEXT("KeepEntrySpeed")));
-		KeepEntrySpeed->DisplayName = LOCTEXT("KeepEntrySpeed", "Keep your entry speed");
-		KeepEntrySpeed->Tooltip = LOCTEXT("KeepEntrySpeedTip", "On: a slide keeps the speed you go into it with, for example from bhopping, instead of being pulled down to the normal slide speed. That speed then fades at the Speed lost while sliding rate, so at 0% you keep it. Off: vanilla. In multiplayer, the host's settings apply to everyone.");
-		KeepEntrySpeed->DefaultValue = false;
-		KeepEntrySpeed->Value = false;
-		Section->SectionProperties.Add(KeepEntrySpeedKey, KeepEntrySpeed);
 
 		RootSection->SectionProperties.Add(SectionKey, Section);
 	}
@@ -153,7 +173,7 @@ namespace
 		UClass* Loaded = LoadClass<UConfigProperty>(nullptr, *Path);
 		if (!Loaded || !Loaded->IsChildOf(NativeClass))
 		{
-			UE_LOG(LogUphillSlide, Warning, TEXT("Config: SML editor class %s not found; that setting won't be editable in the Mods menu"), *Path);
+			UE_LOG(LogBetterMovement, Warning, TEXT("Config: SML editor class %s not found; that setting won't be editable in the Mods menu"), *Path);
 			return nullptr;
 		}
 		return Loaded;
@@ -178,24 +198,39 @@ namespace
 		{
 			return;
 		}
-		if (Key == UUSConfig::UphillAngleKey)
+		if (Key == UBMConfig::UphillAngleKey)
 		{
-			Float->MinValue = UUSConfig::MinUphillAngle;
-			Float->MaxValue = UUSConfig::MaxUphillAngle;
+			Float->MinValue = UBMConfig::MinUphillAngle;
+			Float->MaxValue = UBMConfig::MaxUphillAngle;
 		}
-		else if (Key == UUSConfig::SpeedLossKey)
+		else if (Key == UBMConfig::SpeedLossKey)
 		{
-			Float->MinValue = UUSConfig::MinSpeedLoss;
-			Float->MaxValue = UUSConfig::MaxSpeedLoss;
+			Float->MinValue = UBMConfig::MinSpeedLoss;
+			Float->MaxValue = UBMConfig::MaxSpeedLoss;
+		}
+		else if (Key == UBMConfig::MaxSlideSpeedKey || Key == UBMConfig::MaxAirSpeedKey || Key == UBMConfig::MaxParachuteSpeedKey)
+		{
+			Float->MinValue = UBMConfig::MinSpeedLimit;
+			Float->MaxValue = UBMConfig::MaxSpeedLimit;
+		}
+		else if (Key == UBMConfig::WaterSkimSpeedKey)
+		{
+			Float->MinValue = UBMConfig::MinWaterSkimSpeed;
+			Float->MaxValue = UBMConfig::MaxSpeedLimit;
+		}
+		else if (Key == UBMConfig::ParachuteAccelerationKey)
+		{
+			Float->MinValue = UBMConfig::MinParachuteAcceleration;
+			Float->MaxValue = UBMConfig::MaxParachuteAcceleration;
 		}
 		else
 		{
-			UE_LOG(LogUphillSlide, Warning, TEXT("Config: no range for number setting '%s'; the Mods menu only accepts 0 to 1"), *Key);
+			UE_LOG(LogBetterMovement, Warning, TEXT("Config: no range for number setting '%s'; the Mods menu only accepts 0 to 1"), *Key);
 		}
 	}
 
 	// Converts OldSection and everything under it to SML's Blueprint editor classes, laid out as a vertical list.
-	// Nested sections get a collapsible header showing their tier name and display name.
+	// Nested sections get a collapsible header showing their name and display name.
 	UConfigPropertySection* ConvertSectionRecursive(const UConfigPropertySection* OldSection, const FString& SectionKey, UClass* SectionEditorClass, UObject* Outer, bool bIsRoot, int32& OutConverted, int32& OutTotal)
 	{
 		UConfigPropertySection* NewSection = Cast<UConfigPropertySection>(CloneAs(OldSection, SectionEditorClass, Outer));
@@ -205,7 +240,7 @@ namespace
 			EditorSection->WidgetType = ECP_SectionWidgetType::CPS_Vertical;
 			// SML shows the header as "HeaderText (DisplayName)" and shows nothing when HeaderText is empty.
 			EditorSection->HasHeader = !bIsRoot;
-			EditorSection->HeaderText = bIsRoot ? FText::GetEmpty() : GetTierName(SectionKey);
+			EditorSection->HeaderText = bIsRoot ? FText::GetEmpty() : GetSectionName(SectionKey);
 		}
 		for (const TPair<FString, TObjectPtr<UConfigProperty>>& Pair : OldSection->SectionProperties)
 		{
@@ -235,9 +270,9 @@ namespace
 	}
 }
 
-void UUSConfig::UseSMLEditorClasses()
+void UBMConfig::UseSMLEditorClasses()
 {
-	UUSConfig* Defaults = GetMutableDefault<UUSConfig>();
+	UBMConfig* Defaults = GetMutableDefault<UBMConfig>();
 	UConfigPropertySection* OldRoot = Defaults->RootSection;
 	UClass* SectionClass = OldRoot ? LoadEditorClass(UConfigPropertySection::StaticClass()) : nullptr;
 	if (!SectionClass || OldRoot->GetClass() == SectionClass)
@@ -247,40 +282,67 @@ void UUSConfig::UseSMLEditorClasses()
 
 	int32 Converted = 0, Total = 0;
 	Defaults->RootSection = ConvertSectionRecursive(OldRoot, FString(), SectionClass, Defaults, true, Converted, Total);
-	UE_LOG(LogUphillSlide, Log, TEXT("Config: %d of %d settings/sections use SML's editor widgets"), Converted, Total);
+	UE_LOG(LogBetterMovement, Log, TEXT("Config: %d of %d settings/sections use SML's editor widgets"), Converted, Total);
 }
 
-bool UUSConfig::ReadTierSettings(const UObject* WorldContext, TArray<FUSTierSettings>& OutSettings)
+bool UBMConfig::ReadTierSettings(const UObject* WorldContext, TArray<FBMTierSettings>& OutSettings)
 {
 	OutSettings.Reset();
 	const UConfigPropertySection* Root = FindRoot(WorldContext);
 	if (!Root)
 	{
-		UE_LOG(LogUphillSlide, Verbose, TEXT("Config: not registered yet"));
+		UE_LOG(LogBetterMovement, Verbose, TEXT("Config: not registered yet"));
 		return false;
 	}
 
 	const TArray<FTierDefaults> Defaults = GetTierDefaults();
-	OutSettings.SetNum(USTierCount);
-	for (int32 Index = 0; Index < USTierCount; ++Index)
+	OutSettings.SetNum(BMTierCount);
+	for (int32 Index = 0; Index < BMTierCount; ++Index)
 	{
-		const EUSTier Tier = static_cast<EUSTier>(Index);
+		const EBMTier Tier = static_cast<EBMTier>(Index);
 		const TObjectPtr<UConfigProperty>* SectionProperty = Root->SectionProperties.Find(GetTierSectionKey(Tier));
 		const UConfigPropertySection* Section = SectionProperty ? Cast<UConfigPropertySection>(SectionProperty->Get()) : nullptr;
 		const UConfigPropertyFloat* UphillAngle = FindFloat(Section, UphillAngleKey);
 		const UConfigPropertyFloat* SpeedLoss = FindFloat(Section, SpeedLossKey);
-		const UConfigPropertyBool* KeepEntrySpeed = FindBool(Section, KeepEntrySpeedKey);
-		if (!UphillAngle || !SpeedLoss || !KeepEntrySpeed)
+		if (!UphillAngle || !SpeedLoss)
 		{
-			UE_LOG(LogUphillSlide, Warning, TEXT("Config: settings for %s missing (section %d, angle %d, speed loss %d, keep entry speed %d); using defaults"),
-				USTierName(Tier), Section != nullptr, UphillAngle != nullptr, SpeedLoss != nullptr, KeepEntrySpeed != nullptr);
+			UE_LOG(LogBetterMovement, Warning, TEXT("Config: settings for %s missing (section %d, angle %d, speed loss %d); using defaults"),
+				BMTierName(Tier), Section != nullptr, UphillAngle != nullptr, SpeedLoss != nullptr);
 		}
 
-		FUSTierSettings& Settings = OutSettings[Index];
+		FBMTierSettings& Settings = OutSettings[Index];
 		Settings.UphillAngleDegrees = FMath::Clamp(UphillAngle ? UphillAngle->Value : Defaults[Index].UphillAngle, MinUphillAngle, MaxUphillAngle);
 		Settings.SpeedLossPercent = FMath::Clamp(SpeedLoss ? SpeedLoss->Value : 100.f, MinSpeedLoss, MaxSpeedLoss);
-		Settings.bKeepEntrySpeed = KeepEntrySpeed ? KeepEntrySpeed->Value : false;
 	}
+	return true;
+}
+
+bool UBMConfig::ReadSpeedLimits(const UObject* WorldContext, FBMSpeedLimits& OutLimits)
+{
+	OutLimits = FBMSpeedLimits();
+	const UConfigPropertySection* Root = FindRoot(WorldContext);
+	if (!Root)
+	{
+		return false;
+	}
+	const TObjectPtr<UConfigProperty>* SectionProperty = Root->SectionProperties.Find(SpeedLimitsKey);
+	const UConfigPropertySection* Section = SectionProperty ? Cast<UConfigPropertySection>(SectionProperty->Get()) : nullptr;
+	auto ReadLimit = [Section](const FString& Key, float& InOutValue, float MinValue = MinSpeedLimit, float MaxValue = MaxSpeedLimit)
+	{
+		if (const UConfigPropertyFloat* Limit = FindFloat(Section, Key))
+		{
+			InOutValue = FMath::Clamp(Limit->Value, MinValue, MaxValue);
+		}
+		else
+		{
+			UE_LOG(LogBetterMovement, Warning, TEXT("Config: speed limit '%s' missing (section %d); using %.0f m/s"), *Key, Section != nullptr, InOutValue);
+		}
+	};
+	ReadLimit(MaxSlideSpeedKey, OutLimits.MaxSlideSpeed);
+	ReadLimit(MaxAirSpeedKey, OutLimits.MaxAirSpeed);
+	ReadLimit(MaxParachuteSpeedKey, OutLimits.MaxParachuteSpeed);
+	ReadLimit(WaterSkimSpeedKey, OutLimits.WaterSkimSpeed, MinWaterSkimSpeed);
+	ReadLimit(ParachuteAccelerationKey, OutLimits.ParachuteAcceleration, MinParachuteAcceleration, MaxParachuteAcceleration);
 	return true;
 }
 

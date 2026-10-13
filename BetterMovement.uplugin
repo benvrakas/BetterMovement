@@ -1,11 +1,11 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.1.0",
-	"SemVersion": "1.1.0",
+	"VersionName": "1.2.4",
+	"SemVersion": "1.2.4",
 	"GameVersion": ">=502094",
-	"FriendlyName": "Uphill Slide",
-	"Description": "Slide up steeper slopes. Set the steepest uphill slide for each Blade Runners tier, including Mk+ Blade Runners.",
+	"FriendlyName": "Better Movement",
+	"Description": "Slide up steeper slopes, keep your momentum through slides and jumps, and set top speeds for sliding, the air and the parachute. Settings for each Blade Runners tier, including Mk+ Blade Runners.",
 	"Category": "Modding",
 	"CreatedBy": "",
 	"CreatedByURL": "",
@@ -18,7 +18,7 @@
 	"Installed": false,
 	"Modules": [
 		{
-			"Name": "UphillSlide",
+			"Name": "BetterMovement",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
 		}

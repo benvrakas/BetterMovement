@@ -3,10 +3,10 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
-DECLARE_LOG_CATEGORY_EXTERN(LogUphillSlide, Log, All);
+DECLARE_LOG_CATEGORY_EXTERN(LogBetterMovement, Log, All);
 
-// Module entry point for Uphill Slide.
-class FUphillSlideModule : public IModuleInterface
+// Module entry point for Better Movement.
+class FBetterMovementModule : public IModuleInterface
 {
 public:
 	virtual void StartupModule() override;

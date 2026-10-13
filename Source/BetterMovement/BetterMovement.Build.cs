@@ -2,9 +2,9 @@ using UnrealBuildTool;
 using System.IO;
 using System;
 
-public class UphillSlide : ModuleRules
+public class BetterMovement : ModuleRules
 {
-	public UphillSlide(ReadOnlyTargetRules Target) : base(Target)
+	public BetterMovement(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		CppStandard = CppStandardVersion.Cpp20;
