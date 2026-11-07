@@ -2,6 +2,7 @@
 #include "BetterMovement.h"
 #include "BMConfig.h"
 #include "BMMomentum.h"
+#include "BMRemoteCallObject.h"
 #include "BMWaterSkim.h"
 #include "Curves/CurveFloat.h"
 #include "EngineUtils.h"
@@ -17,6 +18,9 @@ namespace
 {
 	constexpr float ApplyInterval = 0.1f;
 	constexpr double ConfigReadInterval = 1.0;
+
+	// Seconds a client's Mods menu edits must stay unchanged before they're sent to the server.
+	constexpr double EditSettleSeconds = 2.0;
 
 	// Slope angle of flat ground: the angle between a level velocity and straight down.
 	constexpr float FlatSlopeAngle = UE_HALF_PI;
@@ -96,6 +100,10 @@ void ABMMovementSubsystem::Tick(float DeltaSeconds)
 		{
 			RefreshSettingsFromConfig();
 		}
+		else if (GetNetMode() == NM_Client)
+		{
+			SendLocalEdits(Now);
+		}
 		for (auto It = Tracked.CreateIterator(); It; ++It)
 		{
 			if (!It.Key().IsValid())
@@ -147,6 +155,65 @@ void ABMMovementSubsystem::RefreshSettingsFromConfig()
 	{
 		UE_LOG(LogBetterMovement, Log, TEXT("Settings: %s: uphill up to %.2f degrees, speed loss %.0f%%"),
 			BMTierName(static_cast<EBMTier>(Index)), TierSettings[Index].UphillAngleDegrees, TierSettings[Index].SpeedLossPercent);
+	}
+}
+
+void ABMMovementSubsystem::ApplyConfigNow()
+{
+	if (HasAuthority())
+	{
+		RefreshSettingsFromConfig();
+	}
+}
+
+void ABMMovementSubsystem::SendLocalEdits(double Now)
+{
+	TMap<FString, float> Values;
+	if (!UBMConfig::ReadAllValues(this, Values))
+	{
+		return;
+	}
+	if (!bHasLocalValues)
+	{
+		LocalValues = MoveTemp(Values);
+		bHasLocalValues = true;
+		return;
+	}
+
+	for (const TPair<FString, float>& Pair : Values)
+	{
+		const float* Old = LocalValues.Find(Pair.Key);
+		if (!Old || *Old != Pair.Value)
+		{
+			PendingEdits.Add(Pair.Key, Pair.Value);
+			LastLocalEditTime = Now;
+		}
+	}
+	LocalValues = MoveTemp(Values);
+	if (PendingEdits.Num() == 0 || Now - LastLocalEditTime < EditSettleSeconds)
+	{
+		return;
+	}
+
+	TArray<FBMSettingChange> Changes;
+	for (const TPair<FString, float>& Pair : PendingEdits)
+	{
+		FBMSettingChange& Change = Changes.AddDefaulted_GetRef();
+		Change.Path = Pair.Key;
+		Change.Value = Pair.Value;
+	}
+	PendingEdits.Reset();
+
+	if (!UBMRemoteCallObject::IsLocalAdmin(this))
+	{
+		UE_LOG(LogBetterMovement, Log, TEXT("%d local setting changes not sent: not a server admin"), Changes.Num());
+		UBMRemoteCallObject::ShowInChat(this, TEXT("This server uses its own settings, and only server admins can change them. Your change still applies in games you host."));
+		return;
+	}
+	if (UBMRemoteCallObject* RCO = UBMRemoteCallObject::GetLocal(this))
+	{
+		UE_LOG(LogBetterMovement, Log, TEXT("Sending %d setting changes to the server"), Changes.Num());
+		RCO->Server_SetSettings(Changes);
 	}
 }
 

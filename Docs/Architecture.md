@@ -120,6 +120,24 @@ Character movement is simulated on the owning client and re-run on the server. I
   only to its own (`HasAuthority() || IsLocallyControlled()`).
 - Until the settings arrive, a client leaves slides vanilla.
 
+### Admin edits on a dedicated server
+
+A dedicated server has no one at its Mods menu, so its config file was the only way to change it. Since 1.3.0, a
+client (`NM_Client`) reads its own config every second (`UBMConfig::ReadAllValues`, every float keyed
+`Section.Key`) and diffs it against the previous read. The first read in a session is only a baseline, so joining
+never sends anything. Changed values collect in `PendingEdits` and are sent once nothing has changed for 2 s, which
+turns a slider drag or a typed number into one message. Only changed values go, so the admin's other local settings
+never overwrite the server's.
+
+- If the local player isn't an admin (`AFGPlayerState::IsServerAdmin()`, set when they log in as admin in the Server
+  Manager and replicated), nothing is sent and a local chat line explains that the server uses its own settings.
+- Otherwise `UBMRemoteCallObject::Server_SetSettings` (an SML-registered `UFGRemoteCallObject`) carries the changes.
+  The server checks `IsServerAdmin()` itself, clamps each value to its range (`UBMConfig::GetRange`, the same
+  ranges as the Mods menu), sets the live config property, marks the config dirty so SML saves it, then
+  `ApplyConfigNow` replicates the new settings at once and the chat manager broadcasts what changed.
+- The admin's Mods menu keeps showing their own values; overwriting their local config with the server's would
+  change the settings of games they host themselves.
+
 ## Tiers
 
 `GetTier` looks for an `AFGJumpingStilts` among the character's active equipment:

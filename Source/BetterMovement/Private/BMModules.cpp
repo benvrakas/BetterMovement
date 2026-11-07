@@ -1,6 +1,7 @@
 #include "BMModules.h"
 #include "BMConfig.h"
 #include "BMMomentum.h"
+#include "BMRemoteCallObject.h"
 #include "BMWaterSkim.h"
 #include "BMMovementSubsystem.h"
 
@@ -8,6 +9,7 @@ UBMGameInstanceModule::UBMGameInstanceModule()
 {
 	bRootModule = true;
 	ModConfigurations.Add(UBMConfig::StaticClass());
+	RemoteCallObjects.Add(UBMRemoteCallObject::StaticClass());
 }
 
 void UBMGameInstanceModule::DispatchLifecycleEvent(ELifecyclePhase Phase)

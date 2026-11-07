@@ -52,4 +52,15 @@ public:
 	// Fills OutLimits with the speed limits, clamped to the accepted range. Returns false, leaving OutLimits at its
 	// defaults, if the configuration isn't available.
 	static bool ReadSpeedLimits(const UObject* WorldContext, FBMSpeedLimits& OutLimits);
+
+	// Fills OutValues with every setting's current value, keyed "SectionKey.SettingKey". Returns false, leaving
+	// OutValues empty, if the configuration isn't available.
+	static bool ReadAllValues(const UObject* WorldContext, TMap<FString, float>& OutValues);
+
+	// Sets the setting at Path ("SectionKey.SettingKey") to Value, clamped to its range, and marks the configuration
+	// for saving. OutDescription names the setting and its new value. Returns false if there is no such setting.
+	static bool SetValue(const UObject* WorldContext, const FString& Path, float Value, FString& OutDescription);
+
+	// Gets the accepted range of the setting stored under Key. Returns false for an unknown key.
+	static bool GetRange(const FString& Key, float& OutMin, float& OutMax);
 };

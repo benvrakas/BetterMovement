@@ -25,6 +25,9 @@ public:
 	// Returns which tier's settings apply to Character, from the Blade Runners they're wearing.
 	EBMTier GetTier(const AFGCharacterPlayer* Character);
 
+	// Server only. Reads the configuration and replicates any change straight away.
+	void ApplyConfigNow();
+
 	//~ Begin AActor interface
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -44,6 +47,10 @@ private:
 
 	// Server only. Copies the host's configuration into TierSettings and SpeedLimits if it changed.
 	void RefreshSettingsFromConfig();
+
+	// Client only. Collects settings the local player changed in their Mods menu, and sends them to the server once
+	// they've stopped changing if the player is a server admin.
+	void SendLocalEdits(double Now);
 
 	// Sets Character's max slide angle and slope curve from their tier's settings.
 	void ApplyTo(AFGCharacterPlayer* Character);
@@ -75,6 +82,13 @@ private:
 	TSet<FString> LoggedClasses;
 
 	double NextConfigReadTime = 0.0;
+
+	// Client only. The local configuration's values when last read, keyed "SectionKey.SettingKey".
+	TMap<FString, float> LocalValues;
+	bool bHasLocalValues = false;
+	// Client only. Local edits not sent yet, and when the last one was made.
+	TMap<FString, float> PendingEdits;
+	double LastLocalEditTime = 0.0;
 	bool bLoggedWaitingForSettings = false;
 	bool bLoggedVanillaCurve = false;
 	bool bLoggedMissingCurve = false;

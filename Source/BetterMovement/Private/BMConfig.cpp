@@ -68,12 +68,18 @@ namespace
 		return FText::GetEmpty();
 	}
 
-	// Returns the registered live configuration's root section, or null if it isn't registered yet.
-	const UConfigPropertySection* FindRoot(const UObject* WorldContext)
+	// Returns SML's configuration manager for WorldContext's game, or null.
+	UConfigManager* FindManager(const UObject* WorldContext)
 	{
 		const UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
 		const UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
-		const UConfigManager* Manager = GameInstance ? GameInstance->GetSubsystem<UConfigManager>() : nullptr;
+		return GameInstance ? GameInstance->GetSubsystem<UConfigManager>() : nullptr;
+	}
+
+	// Returns the registered live configuration's root section, or null if it isn't registered yet.
+	const UConfigPropertySection* FindRoot(const UObject* WorldContext)
+	{
+		const UConfigManager* Manager = FindManager(WorldContext);
 		return Manager ? Manager->GetConfigurationRootSection(MakeConfigId()) : nullptr;
 	}
 
@@ -198,32 +204,7 @@ namespace
 		{
 			return;
 		}
-		if (Key == UBMConfig::UphillAngleKey)
-		{
-			Float->MinValue = UBMConfig::MinUphillAngle;
-			Float->MaxValue = UBMConfig::MaxUphillAngle;
-		}
-		else if (Key == UBMConfig::SpeedLossKey)
-		{
-			Float->MinValue = UBMConfig::MinSpeedLoss;
-			Float->MaxValue = UBMConfig::MaxSpeedLoss;
-		}
-		else if (Key == UBMConfig::MaxSlideSpeedKey || Key == UBMConfig::MaxAirSpeedKey || Key == UBMConfig::MaxParachuteSpeedKey)
-		{
-			Float->MinValue = UBMConfig::MinSpeedLimit;
-			Float->MaxValue = UBMConfig::MaxSpeedLimit;
-		}
-		else if (Key == UBMConfig::WaterSkimSpeedKey)
-		{
-			Float->MinValue = UBMConfig::MinWaterSkimSpeed;
-			Float->MaxValue = UBMConfig::MaxSpeedLimit;
-		}
-		else if (Key == UBMConfig::ParachuteAccelerationKey)
-		{
-			Float->MinValue = UBMConfig::MinParachuteAcceleration;
-			Float->MaxValue = UBMConfig::MaxParachuteAcceleration;
-		}
-		else
+		if (!UBMConfig::GetRange(Key, Float->MinValue, Float->MaxValue))
 		{
 			UE_LOG(LogBetterMovement, Warning, TEXT("Config: no range for number setting '%s'; the Mods menu only accepts 0 to 1"), *Key);
 		}
@@ -343,6 +324,94 @@ bool UBMConfig::ReadSpeedLimits(const UObject* WorldContext, FBMSpeedLimits& Out
 	ReadLimit(MaxParachuteSpeedKey, OutLimits.MaxParachuteSpeed);
 	ReadLimit(WaterSkimSpeedKey, OutLimits.WaterSkimSpeed, MinWaterSkimSpeed);
 	ReadLimit(ParachuteAccelerationKey, OutLimits.ParachuteAcceleration, MinParachuteAcceleration, MaxParachuteAcceleration);
+	return true;
+}
+
+bool UBMConfig::GetRange(const FString& Key, float& OutMin, float& OutMax)
+{
+	if (Key == UphillAngleKey)
+	{
+		OutMin = MinUphillAngle;
+		OutMax = MaxUphillAngle;
+	}
+	else if (Key == SpeedLossKey)
+	{
+		OutMin = MinSpeedLoss;
+		OutMax = MaxSpeedLoss;
+	}
+	else if (Key == MaxSlideSpeedKey || Key == MaxAirSpeedKey || Key == MaxParachuteSpeedKey)
+	{
+		OutMin = MinSpeedLimit;
+		OutMax = MaxSpeedLimit;
+	}
+	else if (Key == WaterSkimSpeedKey)
+	{
+		OutMin = MinWaterSkimSpeed;
+		OutMax = MaxSpeedLimit;
+	}
+	else if (Key == ParachuteAccelerationKey)
+	{
+		OutMin = MinParachuteAcceleration;
+		OutMax = MaxParachuteAcceleration;
+	}
+	else
+	{
+		return false;
+	}
+	return true;
+}
+
+bool UBMConfig::ReadAllValues(const UObject* WorldContext, TMap<FString, float>& OutValues)
+{
+	OutValues.Reset();
+	const UConfigPropertySection* Root = FindRoot(WorldContext);
+	if (!Root)
+	{
+		return false;
+	}
+	for (const TPair<FString, TObjectPtr<UConfigProperty>>& SectionPair : Root->SectionProperties)
+	{
+		const UConfigPropertySection* Section = Cast<UConfigPropertySection>(SectionPair.Value.Get());
+		if (!Section)
+		{
+			continue;
+		}
+		for (const TPair<FString, TObjectPtr<UConfigProperty>>& Pair : Section->SectionProperties)
+		{
+			if (const UConfigPropertyFloat* Float = Cast<UConfigPropertyFloat>(Pair.Value.Get()))
+			{
+				OutValues.Add(SectionPair.Key + TEXT(".") + Pair.Key, Float->Value);
+			}
+		}
+	}
+	return true;
+}
+
+bool UBMConfig::SetValue(const UObject* WorldContext, const FString& Path, float Value, FString& OutDescription)
+{
+	FString SectionKey, Key;
+	float Min = 0.f, Max = 0.f;
+	if (!Path.Split(TEXT("."), &SectionKey, &Key) || !GetRange(Key, Min, Max) || !FMath::IsFinite(Value))
+	{
+		return false;
+	}
+	const UConfigPropertySection* Root = FindRoot(WorldContext);
+	const TObjectPtr<UConfigProperty>* SectionProperty = Root ? Root->SectionProperties.Find(SectionKey) : nullptr;
+	const UConfigPropertySection* Section = SectionProperty ? Cast<UConfigPropertySection>(SectionProperty->Get()) : nullptr;
+	UConfigPropertyFloat* Float = const_cast<UConfigPropertyFloat*>(FindFloat(Section, Key));
+	if (!Float)
+	{
+		return false;
+	}
+
+	Float->Value = FMath::Clamp(Value, Min, Max);
+	Float->MarkDirty();
+	if (UConfigManager* Manager = FindManager(WorldContext))
+	{
+		Manager->MarkConfigurationDirty(MakeConfigId());
+	}
+	OutDescription = FString::Printf(TEXT("%s: %s %s"), *GetSectionName(SectionKey).ToString(), *Float->DisplayName.ToString(),
+		*FString::SanitizeFloat(Float->Value, 0));
 	return true;
 }
 

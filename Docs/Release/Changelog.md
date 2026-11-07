@@ -2,6 +2,19 @@
 
 Versions before 1.2.0 were released as **Uphill Slide**.
 
+## 1.3.0
+
+- **Server admins can change a dedicated server's settings in game.** Log in as an admin in the Server Manager, then
+  change a setting in **Esc → Mods → Better Movement** as usual. A couple of seconds after you stop changing it, the
+  server applies it for everyone, saves it in its config, and posts what changed in chat. Only the settings you
+  change are sent; the rest of the server's settings stay as they are.
+- Players who aren't admins get a chat message that the server uses its own settings when they change something.
+
+**Good to know**
+
+- Everyone in a multiplayer session needs Better Movement 1.3.0.
+- The Mods menu still shows your own values, not the server's. The chat message shows what the server now uses.
+
 ## 1.2.4
 
 - **The water skim platform reaches further ahead.** It now covers about a second of travel in front of you (up to

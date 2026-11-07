@@ -17,7 +17,8 @@ In FullDescription.md.
 # NETWORK ACTIVITY TRANSPARENCY
 
 Better Movement doesn't connect to the internet. In multiplayer, the host sends its slide settings to players through
-the game's own connection. There's no telemetry or analytics.
+the game's own connection, and a dedicated server admin's setting changes go to the server the same way. There's no
+telemetry or analytics.
 
 # AI USAGE TRANSPARENCY
 

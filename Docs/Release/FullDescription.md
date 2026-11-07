@@ -74,6 +74,9 @@ things, so don't run both), and set your settings again: they start from the def
 - Everyone in the session needs Better Movement.
 - The host's settings apply to every player. On a dedicated server, the server's config is used. Your own settings
   only matter in games you host.
+- **Dedicated server admins** can change the server's settings in game: log in as an admin in the Server Manager,
+  then change settings in **Esc → Mods → Better Movement**. Only the settings you change are sent. The server applies
+  them for everyone, saves them, and posts the change in chat. The menu keeps showing your own values.
 - Works on Windows and Linux dedicated servers.
 
 ### Known limits

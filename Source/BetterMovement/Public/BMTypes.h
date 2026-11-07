@@ -74,6 +74,20 @@ struct FBMSpeedLimits
 	}
 };
 
+// One setting an admin changed in their Mods menu, sent to the server to apply there.
+USTRUCT()
+struct FBMSettingChange
+{
+	GENERATED_BODY()
+
+	// "SectionKey.SettingKey", as UBMConfig::ReadAllValues names it.
+	UPROPERTY()
+	FString Path;
+
+	UPROPERTY()
+	float Value = 0.f;
+};
+
 // Returns the name of Tier for logs and the Mods menu.
 inline const TCHAR* BMTierName(EBMTier Tier)
 {

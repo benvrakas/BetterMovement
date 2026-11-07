@@ -51,3 +51,7 @@ it, those settings do nothing. Blade Runners from other mods use the Blade Runne
 ## Multiplayer
 
 Everyone needs the mod. The host's settings (or the dedicated server's) apply to every player.
+
+On a dedicated server, a player logged in as an admin (in the Server Manager) can change the server's settings from
+their own Mods menu: each setting they change is sent to the server a couple of seconds after they stop changing it,
+applied for everyone, saved in the server's config and announced in chat. Settings they don't touch are left alone.
