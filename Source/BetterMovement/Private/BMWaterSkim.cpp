@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "FGCharacterMovementComponent.h"
 #include "FGCharacterPlayer.h"
+#include "GameFramework/Character.h"
 #include "GameFramework/PhysicsVolume.h"
 #include "GameFramework/PlayerState.h"
 #include "Patching/NativeHookManager.h"
@@ -35,6 +36,12 @@ namespace
 	// Downward speed, in cm/s, a faster fall is slowed to in the move that reaches the water, so landing on it does
 	// no fall damage.
 	constexpr float LandingFallSpeed = 600.f;
+	// Seconds the server keeps trusting a remote player's position after they were last near water.
+	constexpr double TrustLingerSeconds = 2.0;
+	// Seconds after a player stops skimming during which corrections from the server are still logged.
+	constexpr double CorrectionLogSeconds = 2.0;
+	// Shortest time between two logged corrections for one player.
+	constexpr double CorrectionLogInterval = 1.0;
 
 	struct FSkimState
 	{
@@ -43,6 +50,22 @@ namespace
 		TWeakObjectPtr<AActor> TileOwner;
 		TMap<FIntPoint, TWeakObjectPtr<UBoxComponent>> Tiles;
 		bool bSkimming = false;
+		// World time this player last had tiles under or ahead of them.
+		double LastSkimTime = -1.0e9;
+
+		// Server only: the remote player's moves are taken as they are sent, without error checks or corrections.
+		bool bTrusting = false;
+		// The movement component's own values of the two trust flags, put back when trust ends.
+		bool bSavedIgnoreChecks = false;
+		bool bSavedAcceptAuthoritative = false;
+		double LastNearWaterTime = -1.0e9;
+		// Server only: forced position updates are being skipped and no move has come in since the first skip.
+		bool bSkippingForcedUpdates = false;
+		float LongestSkippedGap = 0.f;
+
+		// Client only: when a server correction was last logged, and how many were not logged since then.
+		double LastCorrectionLogTime = -1.0e9;
+		int32 UnloggedCorrections = 0;
 	};
 
 	TMap<TWeakObjectPtr<UCharacterMovementComponent>, FSkimState> SkimStates;
@@ -199,6 +222,256 @@ namespace
 		}
 		return (Movement.IsMovingOnGround() || Movement.IsFalling()) && Movement.Velocity.Size2D() >= State.MinSpeed;
 	}
+
+	// Returns whether Movement belongs to a remote player's character on the server.
+	bool IsRemoteOnServer(const UCharacterMovementComponent& Movement)
+	{
+		const ACharacter* Character = Movement.GetCharacterOwner();
+		return Character && Character->GetLocalRole() == ROLE_Authority && !Character->IsLocallyControlled();
+	}
+
+	// Makes the server take Movement's position and movement mode from its player's moves without correcting them.
+	void StartTrust(UCharacterMovementComponent* Movement, FSkimState& State)
+	{
+		State.bSavedIgnoreChecks = Movement->bIgnoreClientMovementErrorChecksAndCorrection;
+		State.bSavedAcceptAuthoritative = Movement->bServerAcceptClientAuthoritativePosition;
+		Movement->bIgnoreClientMovementErrorChecksAndCorrection = true;
+		Movement->bServerAcceptClientAuthoritativePosition = true;
+		State.bTrusting = true;
+		UE_LOG(LogBetterMovement, Log, TEXT("%s: near water, server now trusts their position"), *DescribeSkimmer(Movement));
+	}
+
+	// Puts back Movement's own trust flags, leaving any that something else turned off while trusting.
+	void EndTrust(UCharacterMovementComponent* Movement, FSkimState& State, const TCHAR* Reason)
+	{
+		if (!State.bTrusting)
+		{
+			return;
+		}
+		State.bTrusting = false;
+		State.bSkippingForcedUpdates = false;
+		if (Movement)
+		{
+			if (Movement->bIgnoreClientMovementErrorChecksAndCorrection)
+			{
+				Movement->bIgnoreClientMovementErrorChecksAndCorrection = State.bSavedIgnoreChecks;
+			}
+			if (Movement->bServerAcceptClientAuthoritativePosition)
+			{
+				Movement->bServerAcceptClientAuthoritativePosition = State.bSavedAcceptAuthoritative;
+			}
+			UE_LOG(LogBetterMovement, Log, TEXT("%s: server checks their position again (%s)"), *DescribeSkimmer(Movement), Reason);
+		}
+	}
+
+	// Places or removes Movement's tiles for a move of DeltaSeconds starting now. Returns whether any are wanted.
+	bool UpdateTiles(UCharacterMovementComponent* Movement, FSkimState& State, float DeltaSeconds)
+	{
+		if (!ShouldSkim(*Movement, State))
+		{
+			if (State.Tiles.Num() > 0)
+			{
+				DestroyTiles(State, Movement->GetOwner());
+			}
+			if (State.bSkimming)
+			{
+				State.bSkimming = false;
+				UE_LOG(LogBetterMovement, Log, TEXT("%s: stopped skimming at %.0f cm/s"), *DescribeSkimmer(Movement), Movement->Velocity.Size2D());
+			}
+			return false;
+		}
+
+		ACharacter* Character = Movement->GetCharacterOwner();
+		UWorld* World = Movement->GetWorld();
+		const FVector Location = Movement->UpdatedComponent->GetComponentLocation();
+		const float FeetZ = Location.Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		const FIntPoint Centre(FMath::FloorToInt(Location.X / CellSize), FMath::FloorToInt(Location.Y / CellSize));
+
+		// Covers the path from the player to where they'll be after LookAheadSeconds (or this move, if longer), plus
+		// CoverMargin on every side. A cell counts if any part of it is within CoverMargin of the path.
+		const FVector2D PathStart(Location.X, Location.Y);
+		FVector2D Ahead = FVector2D(Movement->Velocity.X, Movement->Velocity.Y) * FMath::Max(DeltaSeconds, LookAheadSeconds);
+		if (Ahead.Size() > MaxLookAhead)
+		{
+			Ahead = Ahead.GetSafeNormal() * MaxLookAhead;
+		}
+		const FVector2D PathEnd = PathStart + Ahead;
+		const float CellReach = CoverMargin + CellSize * UE_HALF_SQRT_2;
+		const FIntPoint MinCell(FMath::FloorToInt((FMath::Min(PathStart.X, PathEnd.X) - CoverMargin) / CellSize),
+			FMath::FloorToInt((FMath::Min(PathStart.Y, PathEnd.Y) - CoverMargin) / CellSize));
+		const FIntPoint MaxCell(FMath::FloorToInt((FMath::Max(PathStart.X, PathEnd.X) + CoverMargin) / CellSize),
+			FMath::FloorToInt((FMath::Max(PathStart.Y, PathEnd.Y) + CoverMargin) / CellSize));
+
+		TSet<FIntPoint> Wanted;
+		int32 Created = 0;
+		bool bHasCentreSurface = false;
+		float CentreSurfaceZ = 0.f;
+		for (int32 X = MinCell.X; X <= MaxCell.X; ++X)
+		{
+			for (int32 Y = MinCell.Y; Y <= MaxCell.Y; ++Y)
+			{
+				const FIntPoint Cell(X, Y);
+				const FVector2D CellCentre = GetCellCentre(Cell);
+				if (Cell != Centre && FVector2D::Distance(CellCentre, FMath::ClosestPointOnSegment2D(CellCentre, PathStart, PathEnd)) > CellReach)
+				{
+					continue;
+				}
+				float SurfaceZ = 0.f;
+				if (!FindSurface(World, Cell, FeetZ, SurfaceZ))
+				{
+					continue;
+				}
+				Wanted.Add(Cell);
+				if (Cell == Centre)
+				{
+					bHasCentreSurface = true;
+					CentreSurfaceZ = SurfaceZ;
+				}
+				TWeakObjectPtr<UBoxComponent>& Tile = State.Tiles.FindOrAdd(Cell);
+				if (!Tile.IsValid())
+				{
+					Tile = CreateTile(State.TileOwner.Get(), Character, Cell, SurfaceZ);
+					++Created;
+				}
+			}
+		}
+		for (auto It = State.Tiles.CreateIterator(); It; ++It)
+		{
+			if (!Wanted.Contains(It.Key()))
+			{
+				DestroyTile(It.Value().Get(), Character);
+				It.RemoveCurrent();
+			}
+		}
+
+		const float FallSpeed = -Movement->Velocity.Z;
+		if (bHasCentreSurface && Movement->IsFalling() && FallSpeed > LandingFallSpeed
+			&& FeetZ - (CentreSurfaceZ + TileLift) <= FallSpeed * FMath::Max(DeltaSeconds, 0.f))
+		{
+			UE_LOG(LogBetterMovement, Verbose, TEXT("%s: landing on water, fall slowed from %.0f to %.0f cm/s"), *DescribeSkimmer(Movement), FallSpeed, LandingFallSpeed);
+			Movement->Velocity.Z = -LandingFallSpeed;
+		}
+
+		const bool bOverWater = Wanted.Num() > 0;
+		if (bOverWater)
+		{
+			State.LastSkimTime = World->GetTimeSeconds();
+		}
+		if (bOverWater != State.bSkimming)
+		{
+			State.bSkimming = bOverWater;
+			UE_LOG(LogBetterMovement, Log, TEXT("%s: %s skimming at %.0f cm/s (%d tiles)"), *DescribeSkimmer(Movement),
+				bOverWater ? TEXT("started") : TEXT("stopped"), Movement->Velocity.Size2D(), State.Tiles.Num());
+		}
+		if (Created > 0)
+		{
+			UE_LOG(LogBetterMovement, VeryVerbose, TEXT("%s: created %d water tiles (%d total)"), *DescribeSkimmer(Movement), Created, State.Tiles.Num());
+		}
+		return bOverWater;
+	}
+
+	// On the server, starts or ends trust in a remote player's moves. bOverWater is whether this move placed tiles.
+	void UpdateTrust(UCharacterMovementComponent* Movement, FSkimState& State, bool bOverWater)
+	{
+		if (!IsRemoteOnServer(*Movement))
+		{
+			EndTrust(Movement, State, TEXT("no longer a remote player"));
+			return;
+		}
+		if (State.MinSpeed <= 0.f || !Movement->UpdatedComponent)
+		{
+			EndTrust(Movement, State, TEXT("water skimming off"));
+			return;
+		}
+
+		UWorld* World = Movement->GetWorld();
+		const double Now = World->GetTimeSeconds();
+		if (State.bSkippingForcedUpdates)
+		{
+			State.bSkippingForcedUpdates = false;
+			UE_LOG(LogBetterMovement, Log, TEXT("%s: moves arrived again after a %.2f s gap"), *DescribeSkimmer(Movement), State.LongestSkippedGap);
+		}
+
+		// Speed is left out on purpose: a server running this player's moves slower than the client must not stop
+		// trusting them, or it would correct them into the water.
+		bool bNearWater = bOverWater || Movement->IsInWater();
+		if (!bNearWater)
+		{
+			const FVector Location = Movement->UpdatedComponent->GetComponentLocation();
+			const float FeetZ = Location.Z - Movement->GetCharacterOwner()->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+			const FIntPoint Cell(FMath::FloorToInt(Location.X / CellSize), FMath::FloorToInt(Location.Y / CellSize));
+			float SurfaceZ = 0.f;
+			bNearWater = FindSurface(World, Cell, FeetZ, SurfaceZ);
+		}
+
+		if (bNearWater)
+		{
+			State.LastNearWaterTime = Now;
+			if (!State.bTrusting)
+			{
+				StartTrust(Movement, State);
+			}
+		}
+		else if (State.bTrusting && Now - State.LastNearWaterTime > TrustLingerSeconds)
+		{
+			EndTrust(Movement, State, TEXT("away from water"));
+		}
+	}
+
+	// Returns whether the server should skip simulating Movement's player itself after DeltaTime without their moves.
+	bool ShouldSkipForcedUpdate(UCharacterMovementComponent* Movement, float DeltaTime)
+	{
+		FSkimState* State = SkimStates.Find(Movement);
+		if (!State || !State->bTrusting)
+		{
+			return false;
+		}
+		if (!State->bSkippingForcedUpdates)
+		{
+			State->bSkippingForcedUpdates = true;
+			State->LongestSkippedGap = 0.f;
+			UE_LOG(LogBetterMovement, Log, TEXT("%s: no moves for %.2f s; holding them in place instead of simulating them near water"), *DescribeSkimmer(Movement), DeltaTime);
+		}
+		State->LongestSkippedGap = FMath::Max(State->LongestSkippedGap, DeltaTime);
+		return true;
+	}
+
+	// Logs a server correction of the local player that arrives while they skim or shortly after.
+	void LogCorrection(UCharacterMovementComponent* Movement, const FVector& NewLocation, const FVector& NewVelocity, bool bBaseRelativePosition, uint8 ServerMovementMode)
+	{
+		FSkimState* State = SkimStates.Find(Movement);
+		if (!State || State->MinSpeed <= 0.f || !Movement->UpdatedComponent)
+		{
+			return;
+		}
+		const double Now = Movement->GetWorld()->GetTimeSeconds();
+		if (!State->bSkimming && Now - State->LastSkimTime > CorrectionLogSeconds)
+		{
+			return;
+		}
+		if (Now - State->LastCorrectionLogTime < CorrectionLogInterval)
+		{
+			++State->UnloggedCorrections;
+			return;
+		}
+
+		TEnumAsByte<EMovementMode> Mode;
+		TEnumAsByte<EMovementMode> GroundMode;
+		uint8 CustomMode = 0;
+		Movement->UnpackNetworkMovementMode(ServerMovementMode, Mode, CustomMode, GroundMode);
+		const FString ModeName = Mode == MOVE_Custom
+			? FString::Printf(TEXT("Custom %d"), CustomMode)
+			: StaticEnum<EMovementMode>()->GetNameStringByValue(Mode.GetValue());
+		const FString Error = bBaseRelativePosition
+			? FString(TEXT("relative to a moving base"))
+			: FString::Printf(TEXT("%.0f cm off, %.0f cm vertically"), FVector::Dist(NewLocation, Movement->UpdatedComponent->GetComponentLocation()),
+				NewLocation.Z - Movement->UpdatedComponent->GetComponentLocation().Z);
+		UE_LOG(LogBetterMovement, Log, TEXT("%s: server corrected position %s skimming: server mode %s, %s, speed server %.0f / client %.0f cm/s (%d more since last log)"),
+			*DescribeSkimmer(Movement), State->bSkimming ? TEXT("while") : TEXT("just after"), *ModeName, *Error,
+			NewVelocity.Size2D(), Movement->Velocity.Size2D(), State->UnloggedCorrections);
+		State->LastCorrectionLogTime = Now;
+		State->UnloggedCorrections = 0;
+	}
 }
 
 void FBMWaterSkim::InstallHook()
@@ -216,6 +489,23 @@ void FBMWaterSkim::InstallHook()
 		BeforeMove(Self, DeltaSeconds);
 	});
 	UE_LOG(LogBetterMovement, Log, TEXT("Hook installed: UCharacterMovementComponent::UpdateCharacterStateBeforeMovement"));
+	SUBSCRIBE_UOBJECT_METHOD(UFGCharacterMovementComponent, ForcePositionUpdate, [](auto& Scope, UCharacterMovementComponent* Self, float DeltaTime)
+	{
+		if (ShouldSkipForcedUpdate(Self, DeltaTime))
+		{
+			Scope.Override(false);
+		}
+	});
+	UE_LOG(LogBetterMovement, Log, TEXT("Hook installed: UCharacterMovementComponent::ForcePositionUpdate"));
+	if (!IsRunningDedicatedServer())
+	{
+		SUBSCRIBE_UOBJECT_METHOD(UFGCharacterMovementComponent, ClientAdjustPosition_Implementation, [](auto& Scope, UCharacterMovementComponent* Self, float TimeStamp, FVector NewLocation,
+			FVector NewVelocity, UPrimitiveComponent* NewBase, FName NewBaseBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode, TOptional<FRotator> OptionalRotation)
+		{
+			LogCorrection(Self, NewLocation, NewVelocity, bBaseRelativePosition, ServerMovementMode);
+		});
+		UE_LOG(LogBetterMovement, Log, TEXT("Hook installed: UCharacterMovementComponent::ClientAdjustPosition_Implementation"));
+	}
 #endif
 }
 
@@ -247,8 +537,9 @@ void FBMWaterSkim::Reset()
 {
 	for (TPair<TWeakObjectPtr<UCharacterMovementComponent>, FSkimState>& Pair : SkimStates)
 	{
-		const UCharacterMovementComponent* Movement = Pair.Key.Get();
+		UCharacterMovementComponent* Movement = Pair.Key.Get();
 		DestroyTiles(Pair.Value, Movement ? Movement->GetOwner() : nullptr);
+		EndTrust(Movement, Pair.Value, TEXT("mod settings reset"));
 	}
 	SkimStates.Reset();
 	SurfaceCache.Reset();
@@ -263,101 +554,6 @@ void FBMWaterSkim::BeforeMove(UCharacterMovementComponent* Movement, float Delta
 	{
 		return;
 	}
-
-	if (!ShouldSkim(*Movement, *State))
-	{
-		if (State->Tiles.Num() > 0)
-		{
-			DestroyTiles(*State, Movement->GetOwner());
-		}
-		if (State->bSkimming)
-		{
-			State->bSkimming = false;
-			UE_LOG(LogBetterMovement, Log, TEXT("%s: stopped skimming at %.0f cm/s"), *DescribeSkimmer(Movement), Movement->Velocity.Size2D());
-		}
-		return;
-	}
-
-	ACharacter* Character = Movement->GetCharacterOwner();
-	UWorld* World = Movement->GetWorld();
-	const FVector Location = Movement->UpdatedComponent->GetComponentLocation();
-	const float FeetZ = Location.Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-	const FIntPoint Centre(FMath::FloorToInt(Location.X / CellSize), FMath::FloorToInt(Location.Y / CellSize));
-
-	// Covers the path from the player to where they'll be after LookAheadSeconds (or this move, if longer), plus
-	// CoverMargin on every side. A cell counts if any part of it is within CoverMargin of the path.
-	const FVector2D PathStart(Location.X, Location.Y);
-	FVector2D Ahead = FVector2D(Movement->Velocity.X, Movement->Velocity.Y) * FMath::Max(DeltaSeconds, LookAheadSeconds);
-	if (Ahead.Size() > MaxLookAhead)
-	{
-		Ahead = Ahead.GetSafeNormal() * MaxLookAhead;
-	}
-	const FVector2D PathEnd = PathStart + Ahead;
-	const float CellReach = CoverMargin + CellSize * UE_HALF_SQRT_2;
-	const FIntPoint MinCell(FMath::FloorToInt((FMath::Min(PathStart.X, PathEnd.X) - CoverMargin) / CellSize),
-		FMath::FloorToInt((FMath::Min(PathStart.Y, PathEnd.Y) - CoverMargin) / CellSize));
-	const FIntPoint MaxCell(FMath::FloorToInt((FMath::Max(PathStart.X, PathEnd.X) + CoverMargin) / CellSize),
-		FMath::FloorToInt((FMath::Max(PathStart.Y, PathEnd.Y) + CoverMargin) / CellSize));
-
-	TSet<FIntPoint> Wanted;
-	int32 Created = 0;
-	bool bHasCentreSurface = false;
-	float CentreSurfaceZ = 0.f;
-	for (int32 X = MinCell.X; X <= MaxCell.X; ++X)
-	{
-		for (int32 Y = MinCell.Y; Y <= MaxCell.Y; ++Y)
-		{
-			const FIntPoint Cell(X, Y);
-			const FVector2D CellCentre = GetCellCentre(Cell);
-			if (Cell != Centre && FVector2D::Distance(CellCentre, FMath::ClosestPointOnSegment2D(CellCentre, PathStart, PathEnd)) > CellReach)
-			{
-				continue;
-			}
-			float SurfaceZ = 0.f;
-			if (!FindSurface(World, Cell, FeetZ, SurfaceZ))
-			{
-				continue;
-			}
-			Wanted.Add(Cell);
-			if (Cell == Centre)
-			{
-				bHasCentreSurface = true;
-				CentreSurfaceZ = SurfaceZ;
-			}
-			TWeakObjectPtr<UBoxComponent>& Tile = State->Tiles.FindOrAdd(Cell);
-			if (!Tile.IsValid())
-			{
-				Tile = CreateTile(State->TileOwner.Get(), Character, Cell, SurfaceZ);
-				++Created;
-			}
-		}
-	}
-	for (auto It = State->Tiles.CreateIterator(); It; ++It)
-	{
-		if (!Wanted.Contains(It.Key()))
-		{
-			DestroyTile(It.Value().Get(), Character);
-			It.RemoveCurrent();
-		}
-	}
-
-	const float FallSpeed = -Movement->Velocity.Z;
-	if (bHasCentreSurface && Movement->IsFalling() && FallSpeed > LandingFallSpeed
-		&& FeetZ - (CentreSurfaceZ + TileLift) <= FallSpeed * FMath::Max(DeltaSeconds, 0.f))
-	{
-		UE_LOG(LogBetterMovement, Verbose, TEXT("%s: landing on water, fall slowed from %.0f to %.0f cm/s"), *DescribeSkimmer(Movement), FallSpeed, LandingFallSpeed);
-		Movement->Velocity.Z = -LandingFallSpeed;
-	}
-
-	const bool bOverWater = Wanted.Num() > 0;
-	if (bOverWater != State->bSkimming)
-	{
-		State->bSkimming = bOverWater;
-		UE_LOG(LogBetterMovement, Log, TEXT("%s: %s skimming at %.0f cm/s (%d tiles)"), *DescribeSkimmer(Movement),
-			bOverWater ? TEXT("started") : TEXT("stopped"), Movement->Velocity.Size2D(), State->Tiles.Num());
-	}
-	if (Created > 0)
-	{
-		UE_LOG(LogBetterMovement, VeryVerbose, TEXT("%s: created %d water tiles (%d total)"), *DescribeSkimmer(Movement), Created, State->Tiles.Num());
-	}
+	const bool bOverWater = UpdateTiles(Movement, *State, DeltaSeconds);
+	UpdateTrust(Movement, *State, bOverWater);
 }

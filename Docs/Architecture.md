@@ -239,6 +239,37 @@ re-run of each `ServerMove`. So both sides place the same floor for the same mov
   swimmers) are then below the visible surface. Tiles deliberately stay on the brush: visible water meshes differ
   between ocean, lakes and rivers, and may have no collision.
 
+### Network robustness (1.3.1)
+
+Players fell into the water mid-skim on laggy or busy dedicated servers. The tiles can't lag, since every move
+places its own on both sides. What went wrong was the server's simulation drifting from the client's, after which the
+server corrected the client into the water:
+
+- **Forced position updates.** `APlayerController::TickActor` calls `ForcePositionUpdate` when no `ServerMove` came
+  in for `MAXCLIENTUPDATEINTERVAL` (0.25 s; up to `MaxClientForcedUpdateDuration`, 1 s). It runs `PerformMovement`
+  using the last input, and it advances `CurrentClientTimeStamp`, so the client's real moves from that gap are
+  rejected. A slide simulated with stale input slows down, drops below the skim speed, loses its tiles and sinks.
+- **Threshold drift.** A client just above the skim speed and a server just below it (or a move re-run from a
+  slightly corrected position): the server swims, and corrects.
+
+Fixes, all in `FBMWaterSkim`:
+
+- **Trust near water.** While a remote player is near water on the server, `UpdateTrust` sets
+  `bIgnoreClientMovementErrorChecksAndCorrection` and `bServerAcceptClientAuthoritativePosition`. Near water means
+  this move placed tiles, or `IsInWater()`, or the centre cell has a surface in the usual search window. With both
+  set, `ServerMoveHandleClientError` skips the error check, copies the client's location and applies the client's
+  movement mode (`ApplyNetworkMovementMode`), so a server-side swim never reaches the client. Speed is left out of the
+  test on purpose: a server that ran the moves slower must not stop trusting them. Trust lasts 2 s after the player
+  was last near water. When it ends, the component's own values are restored, except for flags something else turned
+  off meanwhile. The game doesn't set these flags itself (no use in `Source/FactoryGame`).
+- **No forced updates while trusted.** A `ForcePositionUpdate` hook returns false for a trusted player. The engine
+  then sets no new `ServerTimeStamp` and doesn't advance `CurrentClientTimeStamp`, so the late moves are accepted
+  when they arrive, and the player waits in place meanwhile. The engine retries each tick.
+- **Diagnostics.** The server logs trust starting and ending, and the first skipped forced update of each gap and the
+  gap's length. Clients hook `ClientAdjustPosition_Implementation` (every non-root-motion correction from
+  `ClientHandleMoveResponse` goes through it; it isn't hooked on dedicated servers) and log corrections that arrive
+  while skimming or within 2 s after, at most one per second, with the server's movement mode and the position error.
+
 ## Name
 
 Released as **Uphill Slide** (`UphillSlide`, 1.0.0 to 1.1.1) and renamed to **Better Movement** (`BetterMovement`)

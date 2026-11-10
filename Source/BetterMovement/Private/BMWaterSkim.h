@@ -6,12 +6,13 @@ class AActor;
 class UCharacterMovementComponent;
 
 // Lets a player moving at least the host's water skim speed run and slide across water: before each move, invisible
-// floor tiles are placed at the water surface around them, and removed once they're slower.
+// floor tiles are placed at the water surface around them, and removed once they're slower. Near water, the server
+// takes a remote player's moves without correcting them, and doesn't simulate them itself while their moves are late.
 class FBMWaterSkim
 {
 public:
-	// Hooks UCharacterMovementComponent::UpdateCharacterStateBeforeMovement. Does nothing in editor builds or when
-	// already installed.
+	// Hooks UCharacterMovementComponent::UpdateCharacterStateBeforeMovement and ForcePositionUpdate, and on clients
+	// ClientAdjustPosition_Implementation (to log corrections). Does nothing in editor builds or when already installed.
 	static void InstallHook();
 
 	// Starts handling Movement: it skims at MinSpeed m/s or faster (0 turns skimming off), on tiles owned by TileOwner.
@@ -24,6 +25,7 @@ public:
 	static void Reset();
 
 private:
-	// Places or removes Movement's tiles for a move of DeltaSeconds starting now.
+	// Places or removes Movement's tiles for a move of DeltaSeconds starting now, and on the server starts or ends
+	// trust in its player's moves.
 	static void BeforeMove(UCharacterMovementComponent* Movement, float DeltaSeconds);
 };

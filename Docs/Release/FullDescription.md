@@ -78,6 +78,9 @@ things, so don't run both), and set your settings again: they start from the def
   then change settings in **Esc → Mods → Better Movement**. Only the settings you change are sent. The server applies
   them for everyone, saves them, and posts the change in chat. The menu keeps showing your own values.
 - Works on Windows and Linux dedicated servers.
+- Near water, the server takes your position as your game reports it and doesn't correct it. A laggy or busy server
+  can't drop you into the water mid-skim this way. It also means the server doesn't check movement for cheating near
+  water. Setting the water skim speed to 0 turns this off along with skimming.
 
 ### Known limits
 

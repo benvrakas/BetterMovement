@@ -2,6 +2,21 @@
 
 Versions before 1.2.0 were released as **Uphill Slide**.
 
+## 1.3.1
+
+- **Skimming holds up on laggy or busy servers.** With high ping, dropped packets, or a server slowed down by a big
+  factory, players often fell into the water mid-skim. When your movement updates reached the server late, it moved
+  you on its own and lost speed, then pulled you into the water. Now, near water, the server takes your position as
+  your game reports it, and while your updates are late it waits for them instead of moving you itself.
+- If you still drop in, the game log now says whether the server corrected your position (look for
+  `LogBetterMovement`). Please include it in a report.
+
+**Good to know**
+
+- Everyone in a multiplayer session needs Better Movement 1.3.1. It matters most on the server.
+- Near water the server doesn't check movement for cheating. Setting the water skim speed to 0 turns this off along
+  with skimming.
+
 ## 1.3.0
 
 - **Server admins can change a dedicated server's settings in game.** Log in as an admin in the Server Manager, then
