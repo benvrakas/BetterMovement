@@ -2,6 +2,11 @@
 
 Versions before 1.2.0 were released as **Uphill Slide**.
 
+## 1.3.2
+
+- **For game 1.2.5.1** (the update of 18 November 2026): built against its new game files. Needs SML 3.12.1, which
+  also fixes the crash when joining a multiplayer game on 1.2.5.1.
+
 ## 1.3.1
 
 - **Skimming holds up on laggy or busy servers.** With high ping, dropped packets, or a server slowed down by a big
